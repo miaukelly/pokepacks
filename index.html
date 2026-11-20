@@ -547,7 +547,7 @@ async function upgradeHit(d,minTotal,soft){
     const pick=best||fb;if(!pick)return;
     const img=await loadImg(pick.x.image,pick.x.name);
     const c={id:pick.x.id,name:pick.x.name,rarity:pick.dd.rarity||'Unknown',image:pick.x.image,set:d.set.name,eff:pick.e,psa:pick.psa,raw:pick.raw,rev:false,era:d._era,_img:img};
-    texCard(c);cards[cards.indexOf(hit)]=c;
+    c.gl=glowTier(tierOdds(d._w,pick.e));texCard(c);cards[cards.indexOf(hit)]=c;
     cards.sort((a,b)=>a.eff-b.eff||a.price-b.price);
   }catch(e){console.error(e)}
 }
@@ -619,6 +619,9 @@ const RO=['common','uncommon','rare','holo','ultra','illustration','secret','spe
 const rank=r=>{r=(r||'').toLowerCase();let m=0;RO.forEach((k,i)=>{if(r.includes(k))m=i});if(r.includes('rainbow'))m=Math.max(m,8);return m}; // rainbow rares are top-tier, not plain 'rare'
 // rainbow / secret / hyper / gold: ~1 pack in 500 overall. Natural pulls are scaled down to that, and the upgrade + pity helpers can't hand them out
 const TOPR=[6,8,9],TOPRATE=.002,isTop=e=>TOPR.includes(e),capW=new Map();
+// card glow is purely the raw pull rate of its rarity: 1 in N packs that the rare slot rolls it. 1/10+ platinum, 1/100+ gold, 1/1000+ rainbow (price, grade and set don't matter)
+function tierOdds(w,e){if(e<2)return 1;let t=0,mn=1e9;for(const k in w){t+=w[k];mn=Math.min(mn,w[k])}return t/(w[e]||mn/10)}
+const glowTier=n=>n>=1000?3:n>=100?2:n>=10?1:0;
 function packW(w){let r=capW.get(w);if(r)return r;r=Object.assign({},w);let t=0;TOPR.forEach(k=>{t+=r[k]||0});if(t>TOPRATE){const f=TOPRATE/t;TOPR.forEach(k=>{if(r[k])r[k]*=f})}capW.set(w,r);return r}
 const eff=d=>{if(d.name&&ENRE.test(d.name))return 0; // basic energy is never 'rare', even if it only exists as a holo
   let r=rank(d.rarity);if(r<3&&d.variants&&d.variants.holo&&!d.variants.normal)r=3;return r};
@@ -678,7 +681,7 @@ async function pickEnergy(p,all,sid){
 }
 async function build(i,pity,nw){
   const p=PACKS[i],set=await getSet(p[0]),era=p[5],all=set.cards.filter(c=>c.image).sort(()=>Math.random()-.5);if(!nw)warm(all);
-  const part=m=>all.filter((_,k)=>k%4===m),tgt=wpick(packW(p[6])),nC=era==='m'?2:3,nU=1;
+  const part=m=>all.filter((_,k)=>k%4===m),W6=packW(p[6]),tgt=wpick(W6),nC=era==='m'?2:3,nU=1;
   let [R,C,U]=await Promise.all([pity?pityPick(all,era):pickN([...part(0),...part(1)],d=>eff(d)===tgt,1),pickN(part(2),d=>eff(d)===0,nC),pickN(part(3),d=>eff(d)===1,nU)]);
   const used=new Set([...R,...C,...U].map(x=>x.b.id)),rest=()=>all.filter(c=>!used.has(c.id));
   const top=async(ok,n)=>{const g=await pickN(rest(),ok,n);g.forEach(x=>used.add(x.b.id));return g};
@@ -693,10 +696,10 @@ async function build(i,pity,nw){
   const cards=await Promise.all(list.map(async x=>{
     const e=eff(x.d),psa=x.pity?wpick({9:6,10:4}):psaPick(era),raw=rawPrice(x.d,e,era,x.rev),img=await loadImg(x.b.image,x.b.name);
     const c={id:x.b.id,name:x.b.name,rarity:x.d.rarity||'Unknown',image:x.b.image,set:set.name,eff:e,psa,raw,rev:!!x.rev,era,_img:img};
-    texCard(c);return c;
+    c.gl=x.rev?0:glowTier(tierOdds(W6,e));texCard(c);return c;
   }));
   cards.sort((a,b)=>a.eff-b.eff||a.price-b.price);
-  return{set,cards,_all:all,_used:used,_era:era};
+  return{set,cards,_all:all,_used:used,_era:era,_w:W6};
 }
 function commit(d){
   d.news=d.cards.map(c=>{
@@ -1077,10 +1080,10 @@ function halo(x,y,rx,v,now,al,front){
 }
 // very subtle pulse behind face-down rare cards (blue = rare, gold = very rare); PSA grade doesn't glow
 function cardGlow(c,now){
-  const t=(c.eff>=5||c.raw>=60)?2:c.eff>=3?1:0;if(!t||!c.dealt)return;
+  const t=c.gl||0;if(!t||!c.dealt)return; // 1 platinum, 2 gold, 3 rainbow
   const p=.5+.5*Math.sin(now/650+c.idx*1.9);
   ctx.save();ctx.translate(Math.round(c.sx),Math.round(c.sy-8*c.hw));ctx.rotate(c.srz);
-  for(let k=4;k>=1;k--){ctx.globalAlpha=(.03+.035*p)*(t===2?1.7:1.25);ctx.fillStyle=t===2?'hsl('+((now/9+k*38+c.idx*47)%360|0)+',95%,62%)':'#7fb4ff';const g=k*2;ctx.fillRect(-c.dw/2-g,-c.dh/2-g,c.dw+2*g,c.dh+2*g)}
+  for(let k=4;k>=1;k--){ctx.globalAlpha=(.03+.035*p)*(t===3?1.7:t===2?1.45:1.25);ctx.fillStyle=t===3?'hsl('+((now/9+k*38+c.idx*47)%360|0)+',95%,62%)':t===2?GOLD:'#cfe4ee';const g=k*2;ctx.fillRect(-c.dw/2-g,-c.dh/2-g,c.dw+2*g,c.dh+2*g)}
   ctx.restore();ctx.globalAlpha=1;
 }
 function pack3d(i,x,y,w,h,ry,rx,notop,noshadow){
