@@ -531,13 +531,13 @@ function texCard(c){
 // picking the smallest upgrade that lifts the pack just above the best earlier pack
 async function upgradeHit(d,minTotal,soft){
   try{
-    const cards=d.cards,hit=cards.reduce((a,c)=>c.price>a.price?c:a,cards[0]),others=cards.reduce((a,c)=>a+(c===hit?0:c.price),0);
+    const allowTop=Math.random()<TOPRATE,cards=d.cards,hit=cards.reduce((a,c)=>c.price>a.price?c:a,cards[0]),others=cards.reduce((a,c)=>a+(c===hit?0:c.price),0);
     if(others+hit.price>=minTotal&&(soft||(cards[cards.length-1]===hit&&hit.eff>=3)))return; // already good enough
     const pool=d._all.filter(c=>!d._used.has(c.id));let best=null,fb=null;
     for(let n=0;n<6&&pool.length&&!best;n++){
       const b=pool.splice(0,30),ds=await Promise.all(b.map(x=>cardD(x.id)));
       b.forEach((x,k)=>{
-        const dd=ds[k],e=eff(dd);if(e<hit.eff)return;
+        const dd=ds[k],e=eff(dd);if(e<hit.eff||(isTop(e)&&!allowTop))return;
         const raw=rawPrice(dd,e,d._era,false);if(e===hit.eff&&raw<=hit.raw)return; // must be rarer or worth more
         const psa=psaPick(d._era),price=Math.max(.02,r2(raw*psaMult(psa,{name:x.name,eff:e,raw,era:d._era}))),cand={x,dd,e,raw,psa,price};
         if(!fb||price>fb.price)fb=cand;
@@ -616,7 +616,10 @@ function ribbon(tex,hx,hy,w,h,th0,kap,al){
 // ---- cards / API / pack generation ----
 const ENRE=/^(basic )?(grass|fire|water|lightning|psychic|fighting|darkness|metal) energy$/i,ENSET={sv:'sve',swsh:'swsh1'};
 const RO=['common','uncommon','rare','holo','ultra','illustration','secret','special','hyper','gold'];
-const rank=r=>{r=(r||'').toLowerCase();let m=0;RO.forEach((k,i)=>{if(r.includes(k))m=i});return m};
+const rank=r=>{r=(r||'').toLowerCase();let m=0;RO.forEach((k,i)=>{if(r.includes(k))m=i});if(r.includes('rainbow'))m=Math.max(m,8);return m}; // rainbow rares are top-tier, not plain 'rare'
+// rainbow / secret / hyper / gold: ~1 pack in 500 overall. Natural pulls are scaled down to that, and the upgrade + pity helpers can't hand them out
+const TOPR=[6,8,9],TOPRATE=.002,isTop=e=>TOPR.includes(e),capW=new Map();
+function packW(w){let r=capW.get(w);if(r)return r;r=Object.assign({},w);let t=0;TOPR.forEach(k=>{t+=r[k]||0});if(t>TOPRATE){const f=TOPRATE/t;TOPR.forEach(k=>{if(r[k])r[k]*=f})}capW.set(w,r);return r}
 const eff=d=>{if(d.name&&ENRE.test(d.name))return 0; // basic energy is never 'rare', even if it only exists as a holo
   let r=rank(d.rarity);if(r<3&&d.variants&&d.variants.holo&&!d.variants.normal)r=3;return r};
 const getJ=async p=>{const r=await fetch(API+'/'+p);if(!r.ok)throw new Error(r.status);return r.json()};
@@ -663,7 +666,7 @@ async function pityPick(all,era){
   const pool=all.slice();let best=null;
   for(let n=0;n<4&&pool.length;n++){
     const b=pool.splice(0,30),ds=await Promise.all(b.map(x=>cardD(x.id)));
-    b.forEach((x,k)=>{const d=ds[k],e=eff(d),v=rawPrice(d,e,era,false);if(e>=2&&(!best||v>best.v))best={b:x,d,v,pity:1}});
+    b.forEach((x,k)=>{const d=ds[k],e=eff(d),v=rawPrice(d,e,era,false);if(e>=2&&!isTop(e)&&(!best||v>best.v))best={b:x,d,v,pity:1}});
   }
   return best?[best]:[];
 }
@@ -675,11 +678,11 @@ async function pickEnergy(p,all,sid){
 }
 async function build(i,pity,nw){
   const p=PACKS[i],set=await getSet(p[0]),era=p[5],all=set.cards.filter(c=>c.image).sort(()=>Math.random()-.5);if(!nw)warm(all);
-  const part=m=>all.filter((_,k)=>k%4===m),tgt=wpick(p[6]),nC=era==='m'?2:3,nU=1;
+  const part=m=>all.filter((_,k)=>k%4===m),tgt=wpick(packW(p[6])),nC=era==='m'?2:3,nU=1;
   let [R,C,U]=await Promise.all([pity?pityPick(all,era):pickN([...part(0),...part(1)],d=>eff(d)===tgt,1),pickN(part(2),d=>eff(d)===0,nC),pickN(part(3),d=>eff(d)===1,nU)]);
   const used=new Set([...R,...C,...U].map(x=>x.b.id)),rest=()=>all.filter(c=>!used.has(c.id));
   const top=async(ok,n)=>{const g=await pickN(rest(),ok,n);g.forEach(x=>used.add(x.b.id));return g};
-  if(!R.length)R=await top(d=>eff(d)>=2,1);
+  if(!R.length)R=await top(d=>eff(d)>=2&&!isTop(eff(d)),1);
   if(!R.length)R=await top(()=>true,1);
   if(C.length<nC)C=C.concat(await top(d=>eff(d)===0,nC-C.length));
   if(U.length<nU)U=U.concat(await top(d=>eff(d)===1,nU-U.length));
