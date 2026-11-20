@@ -817,9 +817,13 @@ function spr(img,v,nc){ // crop + gold/platinum recolour (luminance ramp, pixel-
 const monVal=(m,v)=>{const T=TV[m.tier],t=clamp((m.bst-T[2])/(T[3]-T[2]),0,1);return Math.max(.05,r2((T[0]+(T[1]-T[0])*t)*VM[v]))};
 async function gBuild(){
   const master=Math.random()<.01; // 1%: a Master Ball, always a legendary in gold, platinum, rainbow or (very rarely) mythic
-  let t=wpick(TW);if(gbad>=7)t=Math.max(t,2);if(master)t=4;
+  const dit=!master&&Math.random()<.01; // 1%: looks like a rare+ pull, then turns out to be a Ditto
+  let t=wpick(TW);if(gbad>=7)t=Math.max(t,2);if(master)t=4;if(dit)t=wpick({2:TW[2],3:TW[3],4:TW[4]});
   const m=await pickMon(t),r=Math.random(),v=master?(r<.03?'m':r<.15?'r':r<.45?'p':'g'):r<.0005?'m':r<.0045?'r':r<.0165?'p':r<.0665?'g':'n',img=await loadS(m.sprite);
-  return{m,v,t:m.tier,raw:monVal(m,'n'),price:monVal(m,v),img:spr(img,v==='n'?0:v),master,cry:m.cry?{url:m.cry,ab:fetch(m.cry).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer()}).catch(()=>null)}:null};
+  const rec=(m,v,img,master)=>({m,v,t:m.tier,raw:monVal(m,'n'),price:monVal(m,v),img:spr(img,v==='n'?0:v),master,cry:m.cry?{url:m.cry,ab:fetch(m.cry).then(r=>{if(!r.ok)throw 0;return r.arrayBuffer()}).catch(()=>null)}:null});
+  const d=rec(m,v,img,master);
+  if(dit){try{const dm=await fetchMon(132);d.dit=rec(dm,v,await loadS(dm.sprite),false)}catch(e){}} // d is the disguise; d.dit is what it really is
+  return d;
 }
 const gPre=()=>{if(!gStock){gStock=gBuild();gStock.catch(()=>{gStock=null})}};setTimeout(gPre,2500);
 function commitMon(d){
@@ -1108,7 +1112,7 @@ function gStart(){
   if(busy)return;if(cash<GP){sfx.deny();setCap('Need $'+GP.toFixed(2)+' for a capsule.');return}
   unlock();busy=true;cash=r2(cash-GP);saveCash();sfx.pick();
   const job=gStock||gBuild();gStock=null;const g=G={c:-700,last:performance.now(),data:null,spin:0,q:0,s:0};st='gacha';gmB=0;setCap('Inserting coin...');
-  job.then(d=>{if(G!==g)return;g.data=d;commitMon(d);gbad=d.price<GP?gbad+1:0;setTimeout(gPre,800)}).catch(()=>{if(G!==g)return;cash=r2(cash+GP);saveCash();G=null;st='shelf';busy=false;setCap('Couldn’t reach PokéAPI. Try again.')});
+  job.then(d=>{if(G!==g)return;g.data=d;const rd=d.dit||d;commitMon(rd);gbad=rd.price<GP?gbad+1:0;setTimeout(gPre,800)}).catch(()=>{if(G!==g)return;cash=r2(cash+GP);saveCash();G=null;st='shelf';busy=false;setCap('Couldn’t reach PokéAPI. Try again.')});
 }
 function gDone(msg){while(BALLS.length<NB)BALLS.push(mkBall([rnd(-10,10),D0[1]-20,rnd(-10,10)]));G=null;hideInfo();st='shelf';busy=false;gmB=0;if(cash<GP){cash=minPrice;saveCash();msg+=' Free allowance added.'}setCap(msg)}
 // cries come at wildly different loudness: decode each one, measure its level, and scale it to the same quiet target (peak-limited)
@@ -1179,9 +1183,11 @@ function gFrame(now){
     if(g.bm){const rr=t*.55;ctx.fillStyle='#fff';ctx.globalAlpha=clamp(1-t/800,0,1);for(let i=0;i<56;i++){const a=i/56*6.2832;ctx.fillRect(Math.round(CX+Math.cos(a)*rr),Math.round(GY+Math.sin(a)*rr*.8),2,2)}ctx.globalAlpha=1}
     if(g.bm&&t<520){ctx.fillStyle='rgba(255,255,255,'+(t<100?1:1-(t-100)/420)+')';ctx.fillRect(0,0,W,H)}
     else if(t<220){ctx.fillStyle='rgba(255,255,255,'+.55*(1-t/220)+')';ctx.fillRect(0,0,W,H)}
-    if(t>=(g.bm?1300:900)){st='gshow';setCap('Click to collect.');showMonInfo(d,sc)}
+    if(t>=(g.bm?1300:900)){st='gshow';setCap(d.dit?'...':'Click to collect.');g.sh=now;showMonInfo(d,sc)}
   }else if(st==='gshow'){
-    gMach(40,118,.5,SIDE);const by=GY+Math.round(Math.sin(now/600)*2),hr=d.img.width*sc*.5+10;if(d.master)rays(TXs,by,now,.1,16,170);if(d.v!=='n')halo(TXs,by,hr,d.v,now,1,false);gSprite(d,TXs,by,sc,1);if(d.v!=='n')halo(TXs,by,hr,d.v,now,1,true);
+    if(d.dit&&now>g.sh+1700){const rd=d.dit;d.dit=null;Object.assign(d,rd);g.mf=now;setCap('Click to collect.');sfx.reveal({price:d.price,psa:d.v!=='n'?9:0});playCry(d);showMonInfo(d,gsc(d))} // the Ditto drops its disguise
+    gMach(40,118,.5,SIDE);const by=GY+Math.round(Math.sin(now/600)*2),hr=d.img.width*sc*.5+10,pre=d.dit?clamp((now-g.sh-1100)/600,0,1):0,jx=Math.round(Math.sin(now/21)*pre*2.5);if(d.master)rays(TXs,by,now,.1,16,170);if(d.v!=='n')halo(TXs+jx,by,hr,d.v,now,1,false);gSprite(d,TXs+jx,by,sc,1);if(d.v!=='n')halo(TXs+jx,by,hr,d.v,now,1,true);
+    const fa=pre>0?pre*pre*.8:g.mf?clamp(1-(now-g.mf)/500,0,1)*.8:0;if(fa>0){ctx.fillStyle='rgba(255,255,255,'+fa+')';ctx.fillRect(0,0,W,H)}
   }else if(st==='gout'){
     const p=ease(clamp((now-g.o)/450,0,1));gmB=1-p;
     gMach(lerp(40,K.x,p),lerp(118,K.y,p),lerp(.5,k,p),{t:now,ry:lerp(-.35,-.45,p)});
@@ -1489,7 +1495,7 @@ cv.onclick=e=>{
     const bi=boxAt(m.x,m.y);if(bi>=0){buyBox(bi);return}
     const i=packAt(m.x,m.y);if(i>=0)openPack(i);
   }
-  else if(st==='gshow')gCollect();
+  else if(st==='gshow'){if(!(G&&G.data&&G.data.dit))gCollect()}
   else if(st==='field'){
     if(cur.cards.some(c=>c.s==='draw'))return;
     const sh=cur.cards.find(c=>c.s==='shown'),h=hitBack(m);
