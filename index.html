@@ -13,6 +13,7 @@
 body{margin:0;overflow:hidden;background:var(--bg);color:var(--fg);font:16px/1.4 "Silkscreen","Courier New",monospace}
 #cv{position:fixed;inset:0;width:100%;height:100%;display:block;image-rendering:pixelated;cursor:pointer;touch-action:none}
 #cv[hidden]{display:none}
+#fx{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2}
 #hud{position:fixed;left:0;right:0;bottom:0;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px;pointer-events:none;z-index:10}
 #cap{margin:0;min-height:24px;text-align:center;padding:0 8px}
 nav{display:flex;gap:8px;flex-wrap:wrap;justify-content:center}
@@ -409,43 +410,114 @@ function crease(c,k){
     x.beginPath();x.moveTo(0,0);x.lineTo(t,0);x.lineTo(0,t);x.fill();x.beginPath();x.moveTo(w,h);x.lineTo(w-t,h);x.lineTo(w,h-t);x.fill();
   }
 }
-function burn(c){ // PSA 0: scorched, charred, eaten away at the edges and burnt through in a patch
-  const w=c.width,h=c.height,x=c.getContext('2d'),id=x.getImageData(0,0,w,h),D=id.data,sd=Math.random()*999,hx=w*rnd(.3,.7),hy=h*rnd(.45,.8);
+function burn(c){ // PSA 0: heat-browned paper, relief-lit crumbling char, glowing ember front, thin ash rim; also builds a glow texture + flame emitters
+  const w=c.width,h=c.height,x=c.getContext('2d'),id=x.getImageData(0,0,w,h),D=id.data,sd=Math.random()*999,hx=w*rnd(.3,.7),hy=h*rnd(.45,.8),N=w*h;
   const hs=(i,j)=>{const n=Math.sin(i*127.1+j*311.7+sd)*43758.5453;return n-Math.floor(n)};
   const vn=(px,py,sc)=>{const X=px/sc,Y=py/sc,i=Math.floor(X),j=Math.floor(Y),fx=X-i,fy=Y-j,a=hs(i,j),b=hs(i+1,j),c2=hs(i,j+1),d=hs(i+1,j+1),u=fx*fx*(3-2*fx),v=fy*fy*(3-2*fy);return a+(b-a)*u+(c2-a)*v+(a-b-c2+d)*u*v};
+  const B=new Float32Array(N),Hh=new Float32Array(N),A0=new Uint8Array(N);
   for(let j=0;j<h;j++)for(let i=0;i<w;i++){
-    const k=(j*w+i)*4,ed=Math.min(i,w-1-i,(j+1)*.75,(h-j)*.75),n=.6*vn(i,j,13)+.4*vn(i,j,4),hd=Math.hypot(i-hx,(j-hy)*1.1);
+    const p=j*w+i,ed=Math.min(i,w-1-i,(j+1)*.75,(h-j)*.75),n=.6*vn(i,j,13)+.4*vn(i,j,4),hd=Math.hypot(i-hx,(j-hy)*1.1);
     const b=(1-ed/(w*.24))+(j/h-.35)*.32+(n-.5)*.8+Math.max(0,1-hd/(w*.17))*.85;
-    if(b>.95){D[k+3]=0;continue}
-    if(b>.66){const a=hs(i*3,j*3)>.93?60:0;D[k]=22+a;D[k+1]=15+a*.6;D[k+2]=12;D[k+3]=255}
-    else if(b>.57){const m=(b-.57)/.09;D[k]=255;D[k+1]=Math.round(200-130*m);D[k+2]=Math.round(60-40*m);D[k+3]=255}
-    else if(b>.3){const f=1-(b-.3)/.27*.78;D[k]=D[k]*f*1.05;D[k+1]=D[k+1]*f*.9;D[k+2]=D[k+2]*f*.75}
+    B[p]=b;A0[p]=(D[p*4+3]>0&&b<=.95)?1:0;
+    Hh[p]=b*1.1+.26*vn(i+31,j,2.6)+.12*vn(i,j+17,1.4); // height field of the char (crumbly, thicker toward the burn)
   }
-  x.putImageData(id,0,0);
-}
-// fire on a burnt card (drawn each frame): heat glow, additive orange light on the card, layered dithered flame columns, rising embers
-function flames(cx,cy,w,h,now,al){
-  const x0=Math.round(cx-w/2),y0=Math.round(cy-h/2),W2=Math.round(w),H2=Math.round(h),fl=Math.sin(now/90);
-  ctx.save();
-  ctx.fillStyle='#ff7a1a';for(let k=3;k>=1;k--){ctx.globalAlpha=al*(.045+.015*fl);ctx.fillRect(x0-k*5,y0-k*9,W2+k*10,H2+k*12)}
-  ctx.globalCompositeOperation='lighter';ctx.globalAlpha=al*(.14+.05*fl);ctx.fillStyle='#ff5a0a';ctx.fillRect(x0,y0,W2,H2);ctx.globalCompositeOperation='source-over';
-  const C=['#fffbd0','#ffe066','#ffa826','#ee5a14','#a81e0c','#4a0e08'];
-  const stack=(px,py,len,dx,dy,ph,wd)=>{
-    for(let k=0;k<len;k+=2){
-      const r=k/len,ci=r<.14?0:r<.34?1:r<.58?2:r<.8?3:r<.93?4:5,dith=((px>>1)+(k>>1))&1,c=(r>.14&&r<.9&&dith&&(r*10%1)>.6)?Math.min(5,ci+1):ci;
-      ctx.globalAlpha=al*(r>.85?.55:1)*(1-r*.35);ctx.fillStyle=C[c];
-      ctx.fillRect(Math.round(px+dx*k+Math.sin(now/170+ph+k*.22)*(1+r*3)),Math.round(py+dy*k),wd,2);
+  const H=(i,j)=>Hh[Math.max(0,Math.min(h-1,j))*w+Math.max(0,Math.min(w-1,i))];
+  const gc=mk(w,h),gx=gc.getContext('2d'),gid=gx.createImageData(w,h),G=gid.data;let em=[];
+  const gl=(p,r,g,b,a)=>{const k=p*4;if(a<=G[k+3]/255)return;G[k]=r;G[k+1]=g;G[k+2]=b;G[k+3]=Math.round(clamp(a,0,1)*255)};
+  for(let j=0;j<h;j++)for(let i=0;i<w;i++){
+    const p=j*w+i,k=p*4,b=B[p];
+    if(!A0[p]){if(b>.95)D[k+3]=0;continue}
+    if(b>.66){ // charcoal, lit from the upper left so the crumbs and ridges read as raised
+      const lit=clamp(.72+(H(i+1,j)-H(i-1,j)+H(i,j+1)-H(i,j-1))*3.2,.2,1.5),cr=vn(i+9,j+4,3)*.55+vn(i,j,1.2)*.45,ash=hs(i*3,j*3)>.945?1:0,base=16+cr*24;
+      D[k]=base*lit*1.5+ash*60;D[k+1]=base*lit*1.1+ash*54;D[k+2]=base*lit*.9+ash*50;D[k+3]=255;
+      const rg=Math.abs(vn(i+7,j,5)-.5);
+      if(rg<.045&&b<.9){const I=(1-rg/.045)*(1-(b-.66)/.24)*.85;gl(p,255,100+90*I,18,I)} // glowing cracks in the char
+    }else if(b>.57){ // the burning front
+      const t=(b-.57)/.09;D[k]=255;D[k+1]=205-125*t;D[k+2]=70-55*t;D[k+3]=255;
+      const I=(.55+.45*(1-t))*(.6+.4*vn(i,j,3));gl(p,255,235-140*t,170-150*t,I);
+      if(b>.585&&((i+j)&1)===0)em.push([i/w,j/h,(j<6||B[(j-5)*w+i]>.66)?1:.3]); // flames rise freely where the card above is already gone
+    }else if(b>.3){ // heat-browned, darkening paper
+      const t=(b-.3)/.27,f=1-t*.78,tt=t*t*.55;
+      D[k]=D[k]*f*1.05*(1-tt)+96*tt;D[k+1]=D[k+1]*f*.9*(1-tt)+54*tt;D[k+2]=D[k+2]*f*.75*(1-tt)+22*tt;
+      if(b>.5)gl(p,200,50,10,(b-.5)/.07*.35); // paper about to catch glows dull red
     }
-  };
-  const nz=(p,t)=>(Math.sin(p*.9+t/110)+Math.sin(p*.37-t/70)*.8+Math.sin(p*1.7+t/45)*.4+2.2)/4.4;
-  for(let i=0;i<W2;i+=3){const e=1-Math.abs(2*i/W2-1)*.25;stack(x0+i,y0+3,Math.round((9+26*nz(i,now))*e),0,-1,i,3)}
-  for(let j=8;j<H2-6;j+=4){stack(x0-1,y0+j,Math.round(7+13*nz(j+50,now)),-.55,-.85,j,3);stack(x0+W2-2,y0+j,Math.round(7+13*nz(j+90,now)),.55,-.85,j+2,3)}
-  for(let i=0;i<W2;i+=4)stack(x0+i,y0+H2-2,Math.round(6+14*nz(i+120,now)),0,-1,i,4);
-  for(let q=0;q<26;q++){
-    const t=((now/1300+q*.137)%1),sx=x0+((q*53)%W2)+Math.sin(now/260+q*2)*6,sy=y0+H2*.85-t*(H2+46);
-    ctx.globalAlpha=al*(1-t)*(.6+.4*Math.sin(now/60+q));ctx.fillStyle=q%3===0?'#fff1a0':q%3===1?'#ffb83a':'#ff6a1a';ctx.fillRect(Math.round(sx),Math.round(sy),q%4?1:2,q%4?1:2);
   }
-  ctx.restore();ctx.globalAlpha=1;
+  // thickness of the burnt edge: lit ash lip facing the light, dark underside away from it
+  const sol=(i,j)=>i>=0&&j>=0&&i<w&&j<h&&A0[j*w+i]===1;
+  for(let j=0;j<h;j++)for(let i=0;i<w;i++){
+    const p=j*w+i;if(!A0[p]||B[p]<.6)continue;const k=p*4;
+    if(!sol(i-1,j)||!sol(i,j-1)||!sol(i-1,j-1)){D[k]=118;D[k+1]=104;D[k+2]=90}
+    else if(!sol(i+1,j)||!sol(i,j+1)||!sol(i+1,j+1)){D[k]=7;D[k+1]=5;D[k+2]=4}
+    else if(!sol(i-2,j-2)||!sol(i-2,j)){D[k]=D[k]*.5+34;D[k+1]=D[k+1]*.5+29;D[k+2]=D[k+2]*.5+25}
+    else if(!sol(i+2,j+2)){D[k]*=.55;D[k+1]*=.55;D[k+2]*=.55}
+  }
+  const st=Math.ceil(em.length/240);if(st>1)em=em.filter((_,n)=>n%st===0);
+  x.putImageData(id,0,0);gx.putImageData(gid,0,0);
+  // heat light spilling onto the nearby paper: blurred copy of the glow, clipped to the card
+  const hl=mk(w,h),hc=hl.getContext('2d');hc.imageSmoothingEnabled=true;hc.imageSmoothingQuality='high';
+  hc.drawImage(scaled(gc,Math.max(2,w>>2),Math.max(2,h>>2)),0,0,w,h);hc.globalCompositeOperation='destination-in';hc.drawImage(c,0,0);
+  gx.globalCompositeOperation='lighter';gx.globalAlpha=.85;gx.drawImage(hl,0,0);gx.drawImage(hl,0,0);gx.globalAlpha=1;gx.globalCompositeOperation='source-over';
+  c.glow=gc;c.em=em;
+}
+// texture coords -> logical canvas coords, same maths as quad() but unsnapped (used to anchor flames to the 3D card)
+function quadXY(o,ut,vt){
+  const s=o.s||1,u=o.flip?1-ut:ut,cy=Math.cos(o.ry),sy=Math.sin(o.ry),cx=Math.cos(o.rx||0),sx=Math.sin(o.rx||0),cz=Math.cos(o.rz||0),sz=Math.sin(o.rz||0);
+  const lx=(u-.5)*o.w*s,ly=(vt-.5)*o.h*s,z0=(o.bd||0)*(1-Math.pow(2*u-1,2))+(o.bc||0)*u*vt+(o.fd||0)*(1-Math.abs(2*vt-1));
+  const x1=lx*cy-z0*sy,z1=lx*sy+z0*cy,y2=ly*cx-z1*sx,z2=ly*sx+z1*cx,k=F/(F+z2),X=x1*k,Y=y2*k;
+  return[o.x+X*cz-Y*sz,o.y+X*sz+Y*cz,k];
+}
+// ---- realistic fire: hi-res overlay canvas, soft additive particles (white-hot core -> yellow -> orange -> red), smoke and sparks ----
+const fxc=document.createElement('canvas');fxc.id='fx';document.body.appendChild(fxc);
+const fxx=fxc.getContext('2d');let fxP=[],fxDirty=false,fxT=0,fireSrc=null;
+const FXS=[[255,246,205],[255,205,90],[255,128,28],[205,48,10],[84,76,72]].map(c=>{const s=mk(64,64),g=s.getContext('2d'),r=g.createRadialGradient(32,32,0,32,32,32);r.addColorStop(0,'rgba('+c+',1)');r.addColorStop(.35,'rgba('+c+',.55)');r.addColorStop(1,'rgba('+c+',0)');g.fillStyle=r;g.fillRect(0,0,64,64);return s});
+function fxWipe(){fxP.length=0;fireSrc=null;if(fxDirty){fxx.setTransform(1,0,0,1,0,0);fxx.clearRect(0,0,fxc.width,fxc.height);fxDirty=false}}
+function burnFx(tex,qo,now){ // 3D ember glow rides the card mesh; flames are emitted from the burn front
+  const g=tex.glow;if(!g)return;
+  const fl=clamp(.62+.22*Math.sin(now/105)+.14*Math.sin(now/37+1.3)+.08*Math.sin(now/19),.25,1);
+  ctx.save();ctx.globalCompositeOperation='lighter';ctx.globalAlpha=fl;quad(g,Object.assign({},qo,{ns:true}));ctx.restore();
+  fireSrc={c:tex,o:qo};
+}
+function fireStep(now){
+  const src=fireSrc;fireSrc=null;
+  if(!src&&!fxP.length){fxWipe();fxT=now;return}
+  const d=Math.min(devicePixelRatio||1,2),w=innerWidth,h=innerHeight;
+  if(fxc.width!==Math.round(w*d)||fxc.height!==Math.round(h*d)){fxc.width=Math.round(w*d);fxc.height=Math.round(h*d)}
+  const dt=clamp(now-(fxT||now),0,50),ds=dt/1000;fxT=now;
+  fxx.setTransform(d,0,0,d,0,0);fxx.clearRect(0,0,w,h);fxDirty=true;
+  const ux=w/W,uy=h/H,s=ux/2.5;
+  if(src&&src.c.em){
+    const o=src.o;
+    for(const e of src.c.em){
+      const p=e[2],big=p>.6;
+      if(fxP.length>=520)break;
+      if(Math.random()<p*dt*.0032){const q=quadXY(o,e[0],e[1]);fxP.push({k:0,x:q[0]*ux+rnd(-2,2),y:q[1]*uy,vx:rnd(-14,14)*s,vy:-rnd(big?55:20,big?130:55)*s,r:rnd(3.2,5.6)*ux*(big?1:.7),l:rnd(520,1000)*(big?1:.6),a:0,sd:Math.random()*6.28})}
+      if(big&&Math.random()<p*dt*.00045){const q=quadXY(o,e[0],e[1]);fxP.push({k:1,x:q[0]*ux,y:q[1]*uy-12*s,vx:rnd(-8,8)*s,vy:-rnd(18,36)*s,r:rnd(5,8)*ux,l:rnd(1400,2200),a:0,sd:Math.random()*6.28})}
+      if(Math.random()<p*dt*.00028){const q=quadXY(o,e[0],e[1]);fxP.push({k:2,x:q[0]*ux,y:q[1]*uy,vx:rnd(-30,30)*s,vy:-rnd(60,150)*s,r:rnd(.9,1.6)*ux/2,l:rnd(500,1100),a:0,sd:Math.random()*6.28})}
+    }
+    const c0=quadXY(o,.5,.55),R=o.w*.95*ux;fxx.globalCompositeOperation='lighter';fxx.globalAlpha=.11+.04*Math.sin(now/80)+.03*Math.sin(now/33);fxx.drawImage(FXS[2],c0[0]*ux-R,c0[1]*uy-R,R*2,R*2); // light thrown by the fire
+  }
+  for(let i=fxP.length-1;i>=0;i--){
+    const p=fxP[i];p.a+=dt;if(p.a>=p.l){fxP[i]=fxP[fxP.length-1];fxP.pop();continue}
+    const t=p.a/p.l;
+    if(p.k===0)p.vy-=40*s*ds;
+    p.x+=(p.vx+Math.sin(now/130+p.sd+p.y*.03)*14*s*(p.k===1?.8:t*1.2+.3))*ds;p.y+=p.vy*ds;p.vx*=.995;
+  }
+  fxx.globalCompositeOperation='source-over';
+  for(const p of fxP){if(p.k!==1)continue;const t=p.a/p.l,r=p.r*(1+t*1.8);fxx.globalAlpha=.17*(1-t)*Math.min(1,t*6);fxx.drawImage(FXS[4],p.x-r,p.y-r,r*2,r*2)}
+  fxx.globalCompositeOperation='lighter';
+  for(const p of fxP){
+    const t=p.a/p.l;
+    if(p.k===0){
+      const r=p.r*(1.1-t*.8),al=(t<.1?t/.1:1)*Math.pow(1-t,1.3)*.55,sc=Math.min(3.6,t*3.6*1.05),ci=Math.min(3,Math.floor(sc)),f=sc-ci,hh=r*(1.5+.5*(1-t));
+      fxx.globalAlpha=al*(1-f);fxx.drawImage(FXS[ci],p.x-r*.85,p.y-hh,r*1.7,hh*2);
+      if(ci<3&&f>0){fxx.globalAlpha=al*f;fxx.drawImage(FXS[ci+1],p.x-r*.85,p.y-hh,r*1.7,hh*2)}
+    }else if(p.k===2){
+      const tw=.6+.4*Math.sin(now/45+p.sd*5),r=p.r*(1-t*.5);
+      fxx.globalAlpha=(1-t)*tw;fxx.fillStyle='#ffb84a';fxx.beginPath();fxx.arc(p.x,p.y,r,0,6.2832);fxx.fill();
+      fxx.globalAlpha=(1-t)*.25;fxx.drawImage(FXS[2],p.x-r*4,p.y-r*4,r*8,r*8);
+    }
+  }
+  fxx.globalAlpha=1;fxx.globalCompositeOperation='source-over';
 }
 function safeBurn(c){try{burn(c)}catch(e){const x=c.getContext('2d'),w=c.width,h=c.height;x.globalCompositeOperation='source-atop';const g=x.createLinearGradient(0,0,0,h);g.addColorStop(0,'rgba(20,12,8,.9)');g.addColorStop(1,'rgba(70,30,10,.75)');x.fillStyle=g;x.fillRect(0,0,w,h);x.globalCompositeOperation='source-over'}}
 function texCard(c){
@@ -1179,7 +1251,8 @@ function drawBox(i,x,y,ry,open){
   const e=boxSpr(i,ry);ctx.drawImage(e.c,Math.round(x-e.ox),Math.round(y-e.oy));
 }
 function frame(now){
-  if(cv.hidden){requestAnimationFrame(frame);return}
+  if(cv.hidden){fxWipe();requestAnimationFrame(frame);return}
+  if(st==='shelf'&&fxDirty)fxWipe();
   if(st==='shelf'&&pan===panT&&now-lastDraw<30){requestAnimationFrame(frame);return}lastDraw=now;
   ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle=bgPat;ctx.translate(Math.round(pan*W)%12,0);ctx.fillRect(-12,0,W+12,H);ctx.setTransform(1,0,0,1,0,0);
   if(miniI>=0&&st!=='shelf'&&st!=='bopen'&&st[0]!=='g'){ // the box you're opening: glides to the left side and stays, with a pack counter
@@ -1325,7 +1398,7 @@ function frame(now){
             }
             if(c.fl2&&now-c.fl2<120){ctx.fillStyle='rgba(255,255,255,'+.22*(1-(now-c.fl2)/120)+')';ctx.fillRect(Math.round(CX-c.aw/2),Math.round(CY-c.ah/2),c.aw,c.ah)} // latch glint
           }
-        }else{quad(c.tB,{x:CX,y:CY+bob,w:c.aw,h:c.ah,ry,rx:tiltY,rz:0,flip:true,bd:c.bd||0,bc:c.bc||0,fd:c.fd||0,sh:14,cols:8,rows:10});if(c.psa===0)flames(CX,CY+bob,c.aw,c.ah,now,1)}
+        }else{const qo={x:CX,y:CY+bob,w:c.aw,h:c.ah,ry,rx:tiltY,rz:0,flip:true,bd:c.bd||0,bc:c.bc||0,fd:c.fd||0,sh:14,cols:8,rows:10};quad(c.tB,qo);if(c.psa===0)burnFx(c.tB,qo,now)}
       }else if(c.s==='toss'){
         const p=Math.min(1,(now-c.t0)/500),e=ease(p),pk=Math.sin(p*Math.PI);
         quad(p<.7?c.tB:c.tS,{x:CX+(pileX(c)-CX)*e,y:CY+(pileY(c)-CY)*e-pk*30,w:c.aw+(c.pw-c.aw)*e,h:c.ah+(c.ph-c.ah)*e,ry:Math.PI+pk*.5,rz:c.prz*e,flip:true,bd:pk*10+(c.bd||0)*(1-.64*e),bc:(c.bc||0)*(1-.64*e),fd:(c.fd||0)*(1-.64*e),sh:2+pk*12,cols:8,rows:10});
@@ -1342,6 +1415,7 @@ function frame(now){
     const f=floats[i],p=(now-f.t0)/1200;if(p>=1){floats.splice(i,1);continue}
     ctx.globalAlpha=1-p*p;ctx.drawImage(f.t,Math.round(f.x-f.t.width/2),Math.round(f.y-p*22));ctx.globalAlpha=1;
   }
+  fireStep(now);
   requestAnimationFrame(frame);
 }
 async function openPack(i,fromBox){
