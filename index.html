@@ -540,7 +540,7 @@ async function upgradeHit(d,minTotal,soft){
     for(let n=0;n<6&&pool.length&&!best;n++){
       const b=pool.splice(0,30),ds=await Promise.all(b.map(x=>cardD(x.id)));
       b.forEach((x,k)=>{
-        const dd=ds[k],e=eff(dd);if(e<hit.eff||(isTop(e)&&!allowTop))return;
+        const dd=ds[k];if(dd._fail)return;const e=eff(dd);if(e<hit.eff||(isTop(e)&&!allowTop))return;
         const raw=rawPrice(dd,e,d._era,false);if(e===hit.eff&&raw<=hit.raw)return; // must be rarer or worth more
         const psa=psaPick(d._era),price=Math.max(.02,r2(raw*psaMult(psa,{name:x.name,eff:e,raw,era:d._era}))),cand={x,dd,e,raw,psa,price};
         if(!fb||price>fb.price)fb=cand;
@@ -550,7 +550,7 @@ async function upgradeHit(d,minTotal,soft){
     const pick=best||fb;if(!pick)return;
     const img=await loadImg(pick.x.image,pick.x.name);
     const c={id:pick.x.id,name:pick.x.name,rarity:pick.dd.rarity||'Unknown',image:pick.x.image,set:d.set.name,eff:pick.e,psa:pick.psa,raw:pick.raw,rev:false,era:d._era,_img:img};
-    c.gl=glowTier(tierOdds(d._w,pick.e));texCard(c);cards[cards.indexOf(hit)]=c;
+    texCard(c);c.gl=glowTier(c.price);cards[cards.indexOf(hit)]=c;
     cards.sort((a,b)=>a.eff-b.eff||a.price-b.price);
   }catch(e){console.error(e)}
 }
@@ -622,20 +622,33 @@ const RO=['common','uncommon','rare','holo','ultra','illustration','secret','spe
 const rank=r=>{r=(r||'').toLowerCase();let m=0;RO.forEach((k,i)=>{if(r.includes(k))m=i});if(r.includes('rainbow'))m=Math.max(m,8);return m}; // rainbow rares are top-tier, not plain 'rare'
 // rainbow / secret / hyper / gold: ~1 pack in 500 overall. Natural pulls are scaled down to that, and the upgrade + pity helpers can't hand them out
 const TOPR=[6,8,9],TOPRATE=.002,isTop=e=>TOPR.includes(e),capW=new Map();
-// card glow is purely the raw pull rate of its rarity: 1 in N packs that the rare slot rolls it. 1/10+ platinum, 1/100+ gold, 1/1000+ rainbow (price, grade and set don't matter)
-function tierOdds(w,e){if(e<2)return 1;let t=0,mn=1e9;for(const k in w){t+=w[k];mn=Math.min(mn,w[k])}return t/(w[e]||mn/10)}
-const glowTier=n=>n>=1000?3:n>=100?2:n>=10?1:0;
+const glowTier=p=>p>=5000?3:p>=1000?2:p>=100?1:0; // face-down glow by card price: platinum $100+, gold $1000+, rainbow $5000+
 function packW(w){let r=capW.get(w);if(r)return r;r=Object.assign({},w);let t=0;TOPR.forEach(k=>{t+=r[k]||0});if(t>TOPRATE){const f=TOPRATE/t;TOPR.forEach(k=>{if(r[k])r[k]*=f})}capW.set(w,r);return r}
 const eff=d=>{if(d.name&&ENRE.test(d.name))return 0; // basic energy is never 'rare', even if it only exists as a holo
   let r=rank(d.rarity);if(r<3&&d.variants&&d.variants.holo&&!d.variants.normal)r=3;return r};
-const getJ=async p=>{const r=await fetch(API+'/'+p);if(!r.ok)throw new Error(r.status);return r.json()};
-const loadImg=async(base,name)=>{for(const q of['/low.webp','/low.png','/high.webp','/high.png']){const i=await tryImg(base+q);if(i)return i}return packTex(['',name,name.slice(0,7).toUpperCase(),'#555',0,'v'],null)};
+// all card-API traffic goes through one limiter (8 in flight, requests made while a pack is being opened jump the queue), with a timeout and retries so a few slow or rate-limited calls can't sink a pack
+const NET={run:0,q:[]};let fgN=0;
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function netPump(){while(NET.run<8&&NET.q.length){NET.run++;NET.q.shift()()}}
+const netSlot=pri=>new Promise(r=>{if(pri===0){const k=NET.q.findIndex(x=>x.pri===1);NET.q.splice(k<0?NET.q.length:k,0,Object.assign(r,{pri:0}))}else NET.q.push(Object.assign(r,{pri:1}));netPump()});
+const getJ=async(p,pri)=>{
+  pri=pri==null?(fgN>0?0:1):pri;let err;
+  for(let n=0;n<4;n++){
+    await netSlot(pri);const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),12000);
+    try{const r=await fetch(API+'/'+p,{signal:ac.signal});if(r.status===404){const e=new Error('404');e.nf=1;throw e}if(!r.ok)throw new Error(r.status);return await r.json()}
+    catch(e){err=e;if(e.nf)throw e}
+    finally{clearTimeout(tm);NET.run--;netPump()}
+    await sleep(400*Math.pow(2,n)+Math.random()*250);
+  }
+  throw err;
+};
+const loadImg=async(base,name)=>{for(const q of['/low.webp','/low.png','/high.webp','/high.png']){const i=await tryImgT(base+q,9000);if(i)return i}return packTex(['',name,name.slice(0,7).toUpperCase(),'#555',0,'v'],null)};
 const tryImg=url=>new Promise(r=>{const i=new Image();i.onload=()=>r(i);i.onerror=()=>r(null);i.src=url});
 const setC={},det={};
-const getSet=id=>setC[id]||(setC[id]=getJ('sets/'+id));
-const cardD=id=>det[id]||(det[id]=getJ('cards/'+id).catch(()=>({})));
+const getSet=id=>setC[id]||(setC[id]=getJ('sets/'+id).catch(e=>{delete setC[id];throw e})); // a failed fetch is never cached
+const cardD=(id,pri)=>det[id]||(det[id]=getJ('cards/'+id,pri).catch(()=>{delete det[id];return{_fail:1}})); // failures aren't cached, and callers skip them
 // warm the whole set's card details in the background (16 at a time, in the same shuffled order the picker scans) so rarity lookups hit cache instead of waiting on round trips
-function warm(cards){const q=cards.slice();const w=async()=>{while(q.length){const c=q.shift();await cardD(c.id)}};for(let k=0;k<16;k++)w()}
+function warm(cards){const q=cards.slice(0,60);const w=async()=>{while(q.length){const c=q.shift();await cardD(c.id,1)}};for(let k=0;k<4;k++)w()}
 // logos load lazily (only for packs that scroll into view), two at a time, from one shared sets list
 let bp=null;const briefs=()=>bp||(bp=getJ('sets').then(a=>{const m={};a.forEach(x=>m[x.id]=x);return m}).catch(e=>{bp=null;throw e}));
 const logoReq={},logoQ=[],logoTry={};let logoBusy=0;
@@ -663,8 +676,8 @@ function rawPrice(d,e,era,rev){
 async function pickN(pool,ok,n){
   const out=[];
   while(out.length<n&&pool.length){
-    const b=pool.splice(0,Math.max(30,n*8)),ds=await Promise.all(b.map(x=>cardD(x.id)));
-    for(let i=0;i<b.length&&out.length<n;i++)if(ok(ds[i]))out.push({b:b[i],d:ds[i]});
+    const b=pool.splice(0,Math.max(12,n*6)),ds=await Promise.all(b.map(x=>cardD(x.id)));
+    for(let i=0;i<b.length&&out.length<n;i++)if(!ds[i]._fail&&ok(ds[i]))out.push({b:b[i],d:ds[i]});
   }
   return out;
 }
@@ -672,7 +685,7 @@ async function pityPick(all,era){
   const pool=all.slice();let best=null;
   for(let n=0;n<4&&pool.length;n++){
     const b=pool.splice(0,30),ds=await Promise.all(b.map(x=>cardD(x.id)));
-    b.forEach((x,k)=>{const d=ds[k],e=eff(d),v=rawPrice(d,e,era,false);if(e>=2&&!isTop(e)&&(!best||v>best.v))best={b:x,d,v,pity:1}});
+    b.forEach((x,k)=>{const d=ds[k];if(d._fail)return;const e=eff(d),v=rawPrice(d,e,era,false);if(e>=2&&!isTop(e)&&(!best||v>best.v))best={b:x,d,v,pity:1}});
   }
   return best?[best]:[];
 }
@@ -680,9 +693,10 @@ async function pickEnergy(p,all,sid){
   let pool=all.filter(c=>ENRE.test(c.name));
   if(!pool.length){const id=ENSET[sid];if(id)try{const es=await getSet(id);pool=es.cards.filter(c=>c.image&&ENRE.test(c.name))}catch(e){}}
   if(!pool.length)return null;
-  const b=pool[Math.random()*pool.length|0];return{b,d:await cardD(b.id)};
+  const b=pool[Math.random()*pool.length|0],d=await cardD(b.id);return d._fail?null:{b,d};
 }
-async function build(i,pity,nw){
+async function build(i,pity,nw){let e;for(let n=0;n<3;n++){try{return await build0(i,pity,nw)}catch(x){e=x;await sleep(500*(n+1))}}throw e}
+async function build0(i,pity,nw){
   const p=PACKS[i],set=await getSet(p[0]),era=p[5],all=set.cards.filter(c=>c.image).sort(()=>Math.random()-.5);if(!nw)warm(all);
   const part=m=>all.filter((_,k)=>k%4===m),W6=packW(p[6]),tgt=wpick(W6),nC=era==='m'?2:3,nU=1;
   let [R,C,U]=await Promise.all([pity?pityPick(all,era):pickN([...part(0),...part(1)],d=>eff(d)===tgt,1),pickN(part(2),d=>eff(d)===0,nC),pickN(part(3),d=>eff(d)===1,nU)]);
@@ -695,11 +709,11 @@ async function build(i,pity,nw){
   if(era==='m'&&C.length>1&&Math.random()<.7){const en=await pickEnergy(p,all,set.serie&&set.serie.id);if(en&&!used.has(en.b.id)){C.pop();C.push(en);used.add(en.b.id)}} // basic energy slot
   let rev=[];if(era==='m'){rev=await top(d=>eff(d)<=1,1);rev.forEach(x=>x.rev=true)}
   let list=[...C,...U,...rev,...R];
-  if(list.length<5)list=list.concat(await top(()=>true,5-list.length)); // never ship a short pack
+  if(list.length<5)list=list.concat(await top(()=>true,5-list.length));if(list.length<5)throw new Error('short pack'); // never ship a short pack
   const cards=await Promise.all(list.map(async x=>{
     const e=eff(x.d),psa=x.pity?wpick({9:6,10:4}):psaPick(era),raw=rawPrice(x.d,e,era,x.rev),img=await loadImg(x.b.image,x.b.name);
     const c={id:x.b.id,name:x.b.name,rarity:x.d.rarity||'Unknown',image:x.b.image,set:set.name,eff:e,psa,raw,rev:!!x.rev,era,_img:img};
-    c.gl=x.rev?0:glowTier(tierOdds(W6,e));texCard(c);return c;
+    texCard(c);c.gl=glowTier(c.price);return c;
   }));
   cards.sort((a,b)=>a.eff-b.eff||a.price-b.price);
   return{set,cards,_all:all,_used:used,_era:era,_w:W6};
@@ -1086,11 +1100,30 @@ function halo(x,y,rx,v,now,al,front){
   ctx.globalAlpha=1;
 }
 // very subtle pulse behind face-down rare cards (blue = rare, gold = very rare); PSA grade doesn't glow
-function cardGlow(c,now){
-  const t=c.gl||0;if(!t||!c.dealt)return; // 1 platinum, 2 gold, 3 rainbow
-  const p=.5+.5*Math.sin(now/650+c.idx*1.9);
-  ctx.save();ctx.translate(Math.round(c.sx),Math.round(c.sy-8*c.hw));ctx.rotate(c.srz);
-  for(let k=4;k>=1;k--){ctx.globalAlpha=(.03+.035*p)*(t===3?1.7:t===2?1.45:1.25);ctx.fillStyle=t===3?'hsl('+((now/9+k*38+c.idx*47)%360|0)+',95%,62%)':t===2?GOLD:'#cfe4ee';const g=k*2;ctx.fillRect(-c.dw/2-g,-c.dh/2-g,c.dw+2*g,c.dh+2*g)}
+function cardGlow(c,now){ // teaser behind face-down cards: 1 platinum ($100+), 2 gold ($1000+), 3 rainbow ($5000+)
+  const t=c.gl||0;if(!t||!c.dealt)return;
+  const w=c.dw,h=c.dh,ph=now/1000+c.idx*1.7,p=.5+.5*Math.sin(ph*2.2),hue=(now/14+c.idx*53)%360,col=t===1?'205,232,246':t===2?'255,196,62':null;
+  const C=(a,o)=>col?'rgba('+col+','+a+')':'hsla('+(((hue+(o||0))%360)|0)+',100%,64%,'+a+')';
+  const rr=(x,y,ww,hh,r)=>{ctx.moveTo(x+r,y);ctx.arcTo(x+ww,y,x+ww,y+hh,r);ctx.arcTo(x+ww,y+hh,x,y+hh,r);ctx.arcTo(x,y+hh,x,y,r);ctx.arcTo(x,y,x+ww,y,r);ctx.closePath()};
+  ctx.save();ctx.translate(Math.round(c.sx),Math.round(c.sy-8*c.hw));ctx.rotate(c.srz);ctx.globalCompositeOperation='lighter';
+  // soft aura (elliptical, breathing)
+  ctx.save();ctx.scale(w/h,1);
+  const R=h*(.78+.05*p)*(t===3?1.12:t===2?1.05:1),g=ctx.createRadialGradient(0,0,h*.3,0,0,R),aa=(t===3?.5:t===2?.42:.32)*(.8+.2*p);
+  g.addColorStop(0,C(aa));g.addColorStop(.5,C(aa*.4,50));g.addColorStop(1,C(0,110));
+  ctx.fillStyle=g;ctx.fillRect(-R,-R,R*2,R*2);ctx.restore();
+  // rim light: a bright band sweeps around the edge, plus a wide soft outer line
+  const lg=ctx.createLinearGradient(-w/2,-h/2,w/2,h/2);
+  for(let i=0;i<=4;i++)lg.addColorStop(i/4,C(.3+.5*Math.max(0,Math.sin(ph*1.7-i*1.3)),i*70));
+  ctx.strokeStyle=lg;ctx.lineJoin='round';
+  ctx.beginPath();rr(-w/2-3,-h/2-3,w+6,h+6,6);ctx.lineWidth=5;ctx.globalAlpha=.28+.12*p;ctx.stroke();
+  ctx.beginPath();rr(-w/2-1,-h/2-1,w+2,h+2,4);ctx.lineWidth=t===3?2:1.5;ctx.globalAlpha=.85;ctx.stroke();
+  // twinkling four-point sparkles drifting around the card
+  const n=t===3?9:t===2?6:4;
+  for(let k=0;k<n;k++){
+    const a=k/n*6.2832+ph*(.3+.05*(k%3)),s=Math.max(0,Math.sin(ph*3+k*2.1)),r=1+Math.round(s*(t+1)),rx=w/2+5+4*Math.sin(k*1.7+ph),ry=h/2+5+4*Math.sin(k*2.3+ph*.8),x=Math.round(Math.cos(a)*rx),y=Math.round(Math.sin(a)*ry);
+    if(s<.08)continue;ctx.globalAlpha=s;ctx.fillStyle=t===3?'hsl('+((hue+k*40)%360|0)+',100%,78%)':t===2?'#ffe9a0':'#f4fbff';
+    ctx.fillRect(x-r,y,r*2+1,1);ctx.fillRect(x,y-r,1,r*2+1);if(r>2){ctx.globalAlpha=s*.5;ctx.fillRect(x-1,y-1,3,3)}
+  }
   ctx.restore();ctx.globalAlpha=1;
 }
 function pack3d(i,x,y,w,h,ry,rx,notop,noshadow){
@@ -1441,7 +1474,7 @@ async function openPack(i,fromBox){
   if(fromBox){pan=panT=1;miniI=i;miniOpen=true;miniK=box.k+1;tx0=mb.x;ty0=mb.y}else{tx0=px(i)+pan*W;ty0=py(i)}
   sfx.pick();sfx.peel();
   setCap(fromBox?'Box pack '+(box.k+1)+'/'+box.n+(box.left===1?' | the big one':'')+'...':'Opening '+PACKS[i][1]+'...');
-  const pity=!fromBox&&cash<minPrice,job=pity?build(i,true):(stock[i]||build(i));if(!pity)stock[i]=null;
+  fgN++;const pity=!fromBox&&cash<minPrice,job=pity?build(i,true):(stock[i]||build(i));if(!pity)stock[i]=null;job.then(()=>fgN--,()=>fgN--);
   try{
     const d=await job;
     if(fromBox&&box.left===1){ // last pack beats the rest, and half the time also lifts the box to a small profit
